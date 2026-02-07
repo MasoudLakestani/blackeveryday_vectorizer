@@ -94,9 +94,10 @@ class EmbeddingClient:
 class ProductVectorizer:
     """Main class for vectorizing products."""
 
-    def __init__(self):
+    def __init__(self, batch_size: int = EMBEDDING_BATCH_SIZE):
         self.es = Elasticsearch(**ES_CONFIG)
         self.embedding_client = EmbeddingClient(EMBEDDING_API_URL)
+        self.batch_size = batch_size
         self.processed_count = 0
         self.error_count = 0
 
@@ -426,7 +427,7 @@ class ProductVectorizer:
         for product in self.get_pending_products():
             batch.append(product)
 
-            if len(batch) >= EMBEDDING_BATCH_SIZE:
+            if len(batch) >= self.batch_size:
                 success, errors = self.process_batch(batch)
                 self.processed_count += success
                 self.error_count += errors
@@ -486,7 +487,7 @@ def main():
         '--batch-size',
         type=int,
         default=None,
-        help=f'Batch size for embedding API (default: {EMBEDDING_BATCH_SIZE})'
+        help='Batch size for embedding API'
     )
 
     args = parser.parse_args()
@@ -498,11 +499,10 @@ def main():
         if env_limit.strip():
             limit = int(env_limit)
 
-    global EMBEDDING_BATCH_SIZE
-    if args.batch_size:
-        EMBEDDING_BATCH_SIZE = args.batch_size
+    # Override batch size if provided via CLI
+    batch_size = args.batch_size if args.batch_size else EMBEDDING_BATCH_SIZE
 
-    vectorizer = ProductVectorizer()
+    vectorizer = ProductVectorizer(batch_size=batch_size)
     vectorizer.run(limit=limit)
 
 
