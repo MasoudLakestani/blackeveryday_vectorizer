@@ -1,0 +1,18 @@
+[project]
+name = "vectorizer"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "masoud89",email = "m.lakestani89@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "elasticsearch (>=9.3.0,<10.0.0)",
+    "requests (>=2.32.5,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
