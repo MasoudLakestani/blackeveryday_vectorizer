@@ -5,11 +5,14 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    networks:
+      - blackeveryday_network
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
 networks:
   blackeveryday_network:
     external: true

@@ -22,9 +22,9 @@ ES_USER = os.environ.get('ES_USER', 'elastic')
 ES_PASSWORD = os.environ.get('ES_PASSWORD', '13680129a')
 
 ES_CONFIG = {
-    'hosts': [{'host': ES_HOST, 'port': ES_PORT, 'scheme': 'http'}],
-    'http_auth': (ES_USER, ES_PASSWORD),
-    'timeout': 60,
+    'hosts': [f'http://{ES_HOST}:{ES_PORT}'],
+    'basic_auth': (ES_USER, ES_PASSWORD),
+    'request_timeout': 60,
     'retry_on_timeout': True,
     'max_retries': 3
 }
