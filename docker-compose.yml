@@ -1,10 +1,12 @@
 services:
   vectorizer:
     build: .
-    container_name: product-vectorizer
     env_file:
       - .env
-    restart: unless-stopped
+    deploy:
+      replicas: 5
+      restart_policy:
+        condition: unless-stopped
     networks:
       - blackeveryday_network
     logging:
