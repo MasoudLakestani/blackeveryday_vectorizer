@@ -320,28 +320,40 @@ class ProductVectorizer:
                         "doc": {"is_vectorized": True}
                     })
 
-                # Execute bulk operations in parallel
+                # Execute bulk operations sequentially:
+                # First insert vectors, then only mark successfully vectorized products
                 success_count = 0
                 try:
                     if vector_actions:
-                        # Run both bulk operations in parallel
-                        with ThreadPoolExecutor(max_workers=2) as executor:
-                            insert_future = executor.submit(
-                                bulk, es, vector_actions,
+                        # Step 1: Insert vectors into the target index
+                        success, errors = bulk(
+                            es, vector_actions,
+                            raise_on_error=False, request_timeout=120
+                        )
+                        success_count = success
+
+                        if errors:
+                            logger.error(f"Vector insert errors: {errors[:3]}")
+                            self.error_count += len(errors)
+
+                            # Remove failed IDs from update_actions
+                            failed_ids = set()
+                            for error in errors:
+                                for action_type, error_info in error.items():
+                                    if isinstance(error_info, dict) and '_id' in error_info:
+                                        failed_ids.add(error_info['_id'])
+
+                            update_actions = [
+                                action for action in update_actions
+                                if action['_id'] not in failed_ids
+                            ]
+
+                        # Step 2: Only update is_vectorized for successfully inserted products
+                        if update_actions:
+                            bulk(
+                                es, update_actions,
                                 raise_on_error=False, request_timeout=120
                             )
-                            update_future = executor.submit(
-                                bulk, es, update_actions,
-                                raise_on_error=False, request_timeout=120
-                            )
-
-                            success, errors = insert_future.result()
-                            success_count = success
-                            if errors:
-                                logger.error(f"Vector insert errors: {errors[:3]}")
-                                self.error_count += len(errors)
-
-                            update_future.result()  # Wait for updates
 
                         self.processed_count += success_count
                 except Exception as e:
