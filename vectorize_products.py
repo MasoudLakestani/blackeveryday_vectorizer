@@ -42,6 +42,13 @@ NUM_EMBEDDING_WORKERS = int(os.environ.get('NUM_EMBEDDING_WORKERS', '3'))
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
 
+# Embedding model selection: comma-separated, e.g. "heydari,intfloat-small" or just "intfloat-small"
+ALL_MODELS = ["heydari", "intfloat-small"]
+EMBEDDING_MODELS = [
+    m.strip() for m in os.environ.get('EMBEDDING_MODELS', 'heydari,intfloat-small').split(',')
+    if m.strip() in ALL_MODELS
+] or ALL_MODELS
+
 
 class EmbeddingClient:
     """Client for the embedding API with connection pooling."""
@@ -91,17 +98,22 @@ class EmbeddingClient:
 
         return None
 
-    def get_embeddings_both_models(
+    def get_embeddings(
         self,
-        texts: list[str]
-    ) -> tuple[Optional[list], Optional[list]]:
-        """Get embeddings from both models in parallel."""
+        texts: list[str],
+        models: list[str]
+    ) -> dict[str, Optional[list]]:
+        """Get embeddings from selected models in parallel."""
         results = {}
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        if len(models) == 1:
+            results[models[0]] = self.get_batch_embeddings(texts, models[0])
+            return results
+
+        with ThreadPoolExecutor(max_workers=len(models)) as executor:
             futures = {
-                executor.submit(self.get_batch_embeddings, texts, "heydari"): "heydari",
-                executor.submit(self.get_batch_embeddings, texts, "intfloat-small"): "intfloat-small"
+                executor.submit(self.get_batch_embeddings, texts, model): model
+                for model in models
             }
 
             for future in as_completed(futures):
@@ -112,17 +124,19 @@ class EmbeddingClient:
                     logger.error(f"Error getting {model} embeddings: {e}")
                     results[model] = None
 
-        return results.get("heydari"), results.get("intfloat-small")
+        return results
 
 
 class ProductVectorizer:
     """Main class for vectorizing products with pipeline processing."""
 
-    def __init__(self, batch_size: int = EMBEDDING_BATCH_SIZE, num_workers: int = NUM_EMBEDDING_WORKERS):
+    def __init__(self, batch_size: int = EMBEDDING_BATCH_SIZE, num_workers: int = NUM_EMBEDDING_WORKERS,
+                 models: list[str] = None):
         self.es = Elasticsearch(**ES_CONFIG)
         self.embedding_client = EmbeddingClient(EMBEDDING_API_URL)
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.models = models or EMBEDDING_MODELS
         self.processed_count = 0
         self.error_count = 0
 
@@ -143,12 +157,12 @@ class ProductVectorizer:
         try:
             response = requests.post(
                 f"{EMBEDDING_API_URL}/embed",
-                headers={"model": "heydari", "Content-Type": "application/json"},
+                headers={"model": self.models[0], "Content-Type": "application/json"},
                 json={"text": "test"},
                 timeout=30
             )
             response.raise_for_status()
-            logger.info("Embedding API is accessible")
+            logger.info(f"Embedding API is accessible (models: {', '.join(self.models)})")
         except Exception as e:
             logger.error(f"Failed to connect to embedding API: {e}")
             return False
@@ -237,14 +251,14 @@ class ProductVectorizer:
 
                 products, texts, non_empty_indices = batch
 
-                # Get embeddings from both models in parallel
-                heydari_emb, intfloat_emb = self.embedding_client.get_embeddings_both_models(texts)
+                # Get embeddings from selected models
+                embeddings = self.embedding_client.get_embeddings(texts, self.models)
 
-                if heydari_emb is None or intfloat_emb is None:
+                if any(embeddings.get(m) is None for m in self.models):
                     logger.error(f"Worker {worker_id}: Failed to get embeddings")
-                    self.write_queue.put((products, None, None, non_empty_indices))
+                    self.write_queue.put((products, None, non_empty_indices))
                 else:
-                    self.write_queue.put((products, heydari_emb, intfloat_emb, non_empty_indices))
+                    self.write_queue.put((products, embeddings, non_empty_indices))
 
                 self.embed_queue.task_done()
             except Empty:
@@ -265,26 +279,26 @@ class ProductVectorizer:
                 if result is None:  # Poison pill
                     break
 
-                products, heydari_emb, intfloat_emb, non_empty_indices = result
+                products, embeddings, non_empty_indices = result
 
-                if heydari_emb is None or intfloat_emb is None:
+                if embeddings is None:
                     self.error_count += len(products)
                     self.write_queue.task_done()
                     continue
 
-                # Create embedding maps
-                embedding_map_heydari = {}
-                embedding_map_intfloat = {}
-                for idx, orig_idx in enumerate(non_empty_indices):
-                    embedding_map_heydari[orig_idx] = heydari_emb[idx]
-                    embedding_map_intfloat[orig_idx] = intfloat_emb[idx]
+                # Create embedding maps per model
+                embedding_maps = {}
+                for model in self.models:
+                    embedding_maps[model] = {}
+                    for idx, orig_idx in enumerate(non_empty_indices):
+                        embedding_maps[model][orig_idx] = embeddings[model][idx]
 
                 # Prepare bulk operations
                 vector_actions = []
                 update_actions = []
 
                 for i, product in enumerate(products):
-                    if i not in embedding_map_heydari:
+                    if i not in embedding_maps[self.models[0]]:
                         continue
 
                     doc_id = product['_id']
@@ -293,9 +307,12 @@ class ProductVectorizer:
                     vector_doc = {
                         "_source_product_id": doc_id,
                         "title_fa": source.get('title_fa', ''),
-                        "title_fa_vector_heydari": embedding_map_heydari[i],
-                        "title_fa_vector_intfloat_small": embedding_map_intfloat[i]
                     }
+
+                    if "heydari" in embedding_maps:
+                        vector_doc["title_fa_vector_heydari"] = embedding_maps["heydari"][i]
+                    if "intfloat-small" in embedding_maps:
+                        vector_doc["title_fa_vector_intfloat_small"] = embedding_maps["intfloat-small"][i]
 
                     if source.get('title_en'):
                         vector_doc['title_en'] = source['title_en']
@@ -371,7 +388,7 @@ class ProductVectorizer:
     def run(self, limit: Optional[int] = None):
         """Main execution method with pipeline processing."""
         logger.info("Starting product vectorization with pipeline processing...")
-        logger.info(f"Configuration: batch_size={self.batch_size}, num_workers={self.num_workers}")
+        logger.info(f"Configuration: batch_size={self.batch_size}, num_workers={self.num_workers}, models={self.models}")
 
         if not self.verify_connections():
             logger.error("Connection verification failed. Exiting.")
@@ -499,6 +516,8 @@ def main():
     parser.add_argument('--limit', type=int, default=None, help='Limit number of products')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size for embedding API')
     parser.add_argument('--workers', type=int, default=None, help='Number of embedding workers')
+    parser.add_argument('--models', type=str, default=None,
+                        help='Comma-separated embedding models: heydari,intfloat-small (default: both)')
 
     args = parser.parse_args()
 
@@ -511,7 +530,14 @@ def main():
     batch_size = args.batch_size if args.batch_size else EMBEDDING_BATCH_SIZE
     num_workers = args.workers if args.workers else NUM_EMBEDDING_WORKERS
 
-    vectorizer = ProductVectorizer(batch_size=batch_size, num_workers=num_workers)
+    models = None
+    if args.models:
+        models = [m.strip() for m in args.models.split(',') if m.strip() in ALL_MODELS]
+        if not models:
+            logger.error(f"No valid models specified. Choose from: {ALL_MODELS}")
+            return
+
+    vectorizer = ProductVectorizer(batch_size=batch_size, num_workers=num_workers, models=models)
     vectorizer.run(limit=limit)
 
 
