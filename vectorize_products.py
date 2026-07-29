@@ -29,7 +29,7 @@ ES_CONFIG = {
     'max_retries': 3
 }
 
-EMBEDDING_API_URL = os.environ.get('EMBEDDING_API_URL', 'http://62.106.95.202:8585')
+EMBEDDING_SERVICE_URL = os.environ.get('EMBEDDING_SERVICE_URL', 'http://62.106.95.202:8585')
 INDEX = os.environ.get('INDEX', 'blackeveryday_products_v5')
 SOURCE_FIELD = os.environ.get('SOURCE_FIELD', 'title_fa')
 DESTINATION_FIELD = os.environ.get('DESTINATION_FIELD', 'title_fa_vector_intfloat_base')
@@ -81,7 +81,7 @@ class ProductVectorizer:
                  model: str = EMBEDDING_MODEL, source_field: str = SOURCE_FIELD,
                  destination_field: str = DESTINATION_FIELD):
         self.es = Elasticsearch(**ES_CONFIG)
-        self.embedding_client = EmbeddingClient(EMBEDDING_API_URL)
+        self.embedding_client = EmbeddingClient(EMBEDDING_SERVICE_URL)
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.model = model
@@ -104,7 +104,7 @@ class ProductVectorizer:
 
         try:
             response = requests.post(
-                f"{EMBEDDING_API_URL}/embed",
+                f"{EMBEDDING_SERVICE_URL}/embed",
                 headers={"model": self.model, "Content-Type": "application/json"},
                 json={"text": "test"},
                 timeout=30

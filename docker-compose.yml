@@ -3,6 +3,7 @@ services:
     build: .
     env_file:
       - .env
+      - /opt/blackeveryday/config/.env.common
     deploy:
       replicas: 1
       restart_policy:
